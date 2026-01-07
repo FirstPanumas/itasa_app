@@ -1,0 +1,193 @@
+﻿@page "/departments"
+@rendermode InteractiveServer
+@using BlazorBootstrap
+@using itasa_app.Models
+@using Npgsql
+
+<h3>🏢 จัดการแผนก (Department)</h3>
+<div class="d-flex justify-content-between align-items-center mt-3 mb-3">
+
+<div class="d-flex gap-2">
+    
+    <Button Color="ButtonColor.Primary" @onclick="ShowAddModal">
+        <Icon Name="IconName.PlusCircle" /> เพิ่มแผนกใหม่
+    </Button>
+</div>
+</div>
+@* --- ตารางแสดงข้อมูล (Grid) --- *@
+<Grid @ref="grid"
+      TItem="DepartmentModels"
+      Class="table table-hover table-bordered table-striped"
+      DataProvider="DepartmentsDataProvider"
+      AllowFiltering="true"
+      AllowPaging="true"
+      PageSize="10"
+      Responsive="true">
+
+    <GridColumns>
+       
+
+        <GridColumn TItem="DepartmentModels" HeaderText="รหัสแผนก" PropertyName="DepartmentCode" SortString="DepartmentCode">
+            @context.DepartmentCode
+        </GridColumn>
+
+        <GridColumn TItem="DepartmentModels" HeaderText="ชื่อแผนก" PropertyName="DepartmentName" SortString="DepartmentName">
+            @context.DepartmentName
+        </GridColumn>
+    </GridColumns>
+
+</Grid>
+
+@* --- Modal สำหรับเพิ่มข้อมูล --- *@
+<Modal @ref="addModal" Title="เพิ่มแผนกใหม่">
+    <BodyTemplate>
+        <EditForm Model="@newDept" OnValidSubmit="SaveDepartment">
+            <DataAnnotationsValidator />
+
+            <div class="mb-3">
+                <label class="form-label">รหัสแผนก (Code):</label>
+                <InputText @bind-Value="newDept.DepartmentCode" class="form-control" placeholder="เช่น IT, HR, AC" />
+                <ValidationMessage For="@(() => newDept.DepartmentCode)" />
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">ชื่อแผนก:</label>
+                <InputText @bind-Value="newDept.DepartmentName" class="form-control" placeholder="ระบุชื่อแผนก" />
+                <ValidationMessage For="@(() => newDept.DepartmentName)" />
+            </div>
+
+            @if (!string.IsNullOrEmpty(errorMessage))
+            {
+                <Alert Color="AlertColor.Danger">
+                    <Icon Name="IconName.ExclamationTriangleFill" class="me-2" /> @errorMessage
+                </Alert>
+            }
+
+            <div class="d-flex justify-content-end gap-2 mt-3">
+                <Button Color="ButtonColor.Secondary" @onclick="HideAddModal">ยกเลิก</Button>
+                <Button Type="ButtonType.Submit" Color="ButtonColor.Success">
+                    <Icon Name="IconName.Floppy" class="me-1" /> บันทึก
+                </Button>
+            </div>
+        </EditForm>
+    </BodyTemplate>
+</Modal>
+
+@code {
+    // --- ตัวแปร ---
+    private List<DepartmentModels> departments = new List<DepartmentModels>();
+    private DepartmentModels newDept = new DepartmentModels();
+    private string errorMessage = "";
+
+    // ตัวแปร UI
+    private Grid<DepartmentModels> grid = default!;
+    private Modal addModal = default!;
+
+    protected override void OnInitialized()
+    {
+        FetchData();
+    }
+
+    // --- Grid Data Provider ---
+    private async Task<GridDataProviderResult<DepartmentModels>> DepartmentsDataProvider(GridDataProviderRequest<DepartmentModels> request)
+    {
+        if (departments is null || departments.Count == 0) FetchData();
+        return await Task.FromResult(request.ApplyTo(departments));
+    }
+
+    // --- Modal Logic ---
+    private async Task ShowAddModal()
+    {
+        newDept = new DepartmentModels(); // ล้างค่า
+        errorMessage = "";
+        await addModal.ShowAsync();
+    }
+
+    private async Task HideAddModal()
+    {
+        await addModal.HideAsync();
+    }
+
+    // --- Database Logic (Read) ---
+    private void FetchData()
+    {
+        try
+        {
+            departments.Clear();
+            using (NpgsqlConnection conn = new Myconnection().GetConnection())
+            {
+                using (NpgsqlCommand cmd = conn.CreateCommand())
+                {
+                    // สมมติชื่อ Table ว่า "department_tb" (ปรับแก้ได้ตาม DB จริง)
+                    cmd.CommandText = @"
+                        SELECT ""Id"", ""DepartmentCode"", ""DepartmentName""
+                        FROM public.department_tb
+                        ORDER BY ""Id"" ASC";
+
+                    using (NpgsqlDataReader reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            departments.Add(new DepartmentModels
+                            {
+                                Id = Convert.ToInt32(reader["Id"]),
+                                DepartmentCode = reader["DepartmentCode"].ToString(),
+                                DepartmentName = reader["DepartmentName"].ToString()
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error Fetching Departments: {ex.Message}");
+        }
+    }
+
+    // --- Database Logic (Create) ---
+    private async Task SaveDepartment()
+    {
+        try
+        {
+            using (NpgsqlConnection conn = new Myconnection().GetConnection())
+            {
+                // 1. เช็ค Code ซ้ำ
+                using (NpgsqlCommand checkCmd = conn.CreateCommand())
+                {
+                    checkCmd.CommandText = @"SELECT COUNT(*) FROM public.department_tb WHERE ""DepartmentCode"" = @code";
+                    checkCmd.Parameters.AddWithValue("code", newDept.DepartmentCode);
+                    long count = Convert.ToInt64(checkCmd.ExecuteScalar());
+
+                    if (count > 0)
+                    {
+                        errorMessage = $"รหัสแผนก '{newDept.DepartmentCode}' มีอยู่แล้วในระบบ!";
+                        return;
+                    }
+                }
+
+                // 2. Insert ข้อมูล
+                using (NpgsqlCommand cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = @"
+                        INSERT INTO public.department_tb (""DepartmentCode"", ""DepartmentName"")
+                        VALUES (@code, @name)";
+
+                    cmd.Parameters.AddWithValue("code", newDept.DepartmentCode);
+                    cmd.Parameters.AddWithValue("name", newDept.DepartmentName);
+
+                    cmd.ExecuteNonQuery();
+                }
+            }
+
+            // Success
+            await HideAddModal();
+            FetchData();
+            await grid.RefreshDataAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"บันทึกไม่สำเร็จ: {ex.Message}";
+        }
+    }
+}

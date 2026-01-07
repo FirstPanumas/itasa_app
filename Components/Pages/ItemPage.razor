@@ -1,0 +1,420 @@
+﻿@page "/items"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using BlazorBootstrap
+@using itasa_app.Models
+@using Npgsql
+@using System.IO
+@using Microsoft.AspNetCore.Hosting
+
+@inject IWebHostEnvironment WebHostEnvironment
+@inject IJSRuntime JSRuntime
+
+<h3>📦 จัดการรายการทรัพย์สิน (ItemPage)</h3>
+
+@* --- ส่วนค้นหาและกรองข้อมูล (แบบ Manual เหมือน BorrowPage) --- *@
+<div class="d-flex justify-content-between align-items-center mt-3 mb-3">
+     
+
+    <div class="d-flex gap-2">
+        @* 1. กรองสถานะ *@
+        <select class="form-select" style="width: 150px;"
+                value="@filterStatus"
+                @onchange="OnStatusChanged">
+
+            <option value="0">สถานะทั้งหมด</option>
+
+            @* วนลูป Enum แบบระบุ Type ชัดเจน (กัน Error InvalidCast) *@
+            @foreach (ItemStatus status in Enum.GetValues(typeof(ItemStatus)))
+            {
+                <option value="@((int)status)">@status</option>
+            }
+        </select>
+        @* 2. ช่องค้นหา Text *@
+        <div class="input-group" style="width: 300px;">
+            <span class="input-group-text"><Icon Name="IconName.Search" /></span>
+            <input type="text" class="form-control" placeholder="ชื่อ, บาร์โค้ด..."
+                   @bind="searchText"
+                   @bind:event="oninput"
+                   @bind:after="SearchItem" />
+            @* ปุ่มสแกน *@
+            <button class="btn btn-info" type="button" @onclick="OpenScanModal" title="Scan Barcode">
+                <Icon Name="IconName.QrCodeScan" />
+            </button>
+        </div>
+
+        @* 3. ปุ่ม Reset *@
+        <Button Color="ButtonColor.Secondary" @onclick="ClearSearch">
+            <Icon Name="IconName.ArrowCounterclockwise" />
+        </Button>
+
+        @* 4. ปุ่มเพิ่มรายการ *@
+        <Button Color="ButtonColor.Success" @onclick="ShowAddModal" Class="ms-2">
+            <Icon Name="IconName.PlusCircle" /> เพิ่มใหม่
+        </Button>
+    </div>
+</div>
+
+@* --- ตาราง Grid (ปิด Filter, เปิด Sort) --- *@
+<Grid @ref="grid"
+      TItem="ItemModels"
+      Class="table table-hover table-bordered table-striped align-middle"
+      DataProvider="ItemsDataProvider"
+      AllowFiltering="false"
+      AllowPaging="true"
+      AllowSorting="true"
+      PageSize="10"
+      Responsive="true">
+
+    <GridColumns>
+        @* 1. รูปภาพ *@
+        <GridColumn TItem="ItemModels" HeaderText="รูปภาพ" TextAlignment="Alignment.Center" Sortable="false">
+            @if (!string.IsNullOrEmpty(context.ItemImage))
+            {
+                <img src="@context.ItemImage" alt="img" style="width: 50px; height: 50px; object-fit: cover; border-radius: 5px;" />
+            }
+            else
+            {
+                <Icon Name="IconName.Image" Class="text-secondary fs-3" />
+            }
+        </GridColumn>
+
+        @* 2. ชื่ออุปกรณ์ *@
+        <GridColumn TItem="ItemModels" HeaderText="ชื่ออุปกรณ์" PropertyName="ItemName" SortString="ItemName">
+            @context.ItemName
+        </GridColumn>
+
+        @* 3. รายละเอียด *@
+        <GridColumn TItem="ItemModels" HeaderText="รายละเอียด" PropertyName="Description" SortString="Description">
+            <span class="text-muted small">@context.Description</span>
+        </GridColumn>
+
+        @* 4. บาร์โค้ด *@
+        <GridColumn TItem="ItemModels" HeaderText="บาร์โค้ด" PropertyName="ItemBarcode" SortString="ItemBarcode">
+            <div class="d-flex align-items-center">
+                <Icon Name="IconName.UpcScan" Class="me-2 text-muted" /> @context.ItemBarcode
+            </div>
+        </GridColumn>
+
+        @* 5. สถานะ (ใช้ Badge) *@
+        <GridColumn TItem="ItemModels" HeaderText="สถานะ" PropertyName="ItemStatus" TextAlignment="Alignment.Center">
+            @switch (context.ItemStatus)
+            {
+                case ItemStatus.Ready:
+                    <Badge Color="BadgeColor.Success">พร้อมใช้งาน</Badge>
+                    break;
+                case ItemStatus.Borrowed:
+                    <Badge Color="BadgeColor.Warning" TextColor="TextColor.Dark">กำลังยืม</Badge>
+                    break;
+                default:
+                    <Badge Color="BadgeColor.Secondary">@context.ItemStatus</Badge>
+                    break;
+            }
+        </GridColumn>
+    </GridColumns>
+</Grid>
+
+@* --- Modal สแกน Barcode --- *@
+<Modal @ref="scanModal" Title="สแกน Barcode เพื่อค้นหา" IsVerticallyCentered="true">
+    <BodyTemplate>
+        <div class="text-center">
+            <div id="reader" style="width: 100%; min-height: 300px; background-color: #f0f0f0;"></div>
+            <p class="text-center mt-2 text-muted">กำลังเปิดกล้อง...</p>
+        </div>
+    </BodyTemplate>
+    <FooterTemplate>
+        <Button Color="ButtonColor.Secondary" @onclick="CloseScanModal">ปิดกล้อง</Button>
+    </FooterTemplate>
+</Modal>
+
+@* --- Modal เพิ่มข้อมูล --- *@
+<Modal @ref="addModal" Title="เพิ่มรายการอุปกรณ์ใหม่">
+    <BodyTemplate>
+        <EditForm Model="@newItem" OnValidSubmit="SaveItem">
+            <DataAnnotationsValidator />
+            <div class="row g-3">
+                <div class="col-md-12">
+                    <label>ชื่ออุปกรณ์:</label>
+                    <InputText @bind-Value="newItem.ItemName" class="form-control" />
+                    <ValidationMessage For="@(() => newItem.ItemName)" />
+                </div>
+                <div class="col-md-6">
+                    <label>บาร์โค้ด:</label>
+                    <InputText @bind-Value="newItem.ItemBarcode" class="form-control" />
+                    <ValidationMessage For="@(() => newItem.ItemBarcode)" />
+                </div>
+                <div class="col-md-6">
+                    <label>สถานะ:</label>
+                    <InputSelect @bind-Value="newItem.ItemStatus" class="form-select">
+                        @foreach (var status in Enum.GetValues(typeof(ItemStatus)))
+                        {
+                            <option value="@status">@status</option>
+                        }
+                    </InputSelect>
+                </div>
+                <div class="col-md-12">
+                    <label class="form-label">รูปภาพอุปกรณ์:</label>
+                    <InputFile OnChange="HandleImageUpload" class="form-control" accept=".jpg,.jpeg,.png" />
+                    @if (!string.IsNullOrEmpty(newItem.ItemImage))
+                    {
+                        <div class="mt-2 text-center">
+                            <img src="@newItem.ItemImage" alt="Preview" class="img-thumbnail" style="max-height: 150px;" />
+                        </div>
+                    }
+                </div>
+                <div class="col-md-12">
+                    <label>รายละเอียด:</label>
+                    <InputTextArea @bind-Value="newItem.Description" class="form-control" rows="2" />
+                </div>
+            </div>
+
+            @if (!string.IsNullOrEmpty(errorMessage))
+            {
+                <div class="alert alert-danger mt-3 d-flex align-items-center" role="alert">
+                    <Icon Name="IconName.ExclamationTriangleFill" Class="me-2" />
+                    <div>@errorMessage</div>
+                </div>
+            }
+
+            <div class="text-end mt-3">
+                <Button Type="ButtonType.Submit" Color="ButtonColor.Success">บันทึก</Button>
+                <Button Color="ButtonColor.Secondary" @onclick="HideAddModal">ยกเลิก</Button>
+            </div>
+        </EditForm>
+    </BodyTemplate>
+</Modal>
+
+@code {
+    // Data
+    private List<ItemModels> items = new List<ItemModels>();
+    private ItemModels newItem = new ItemModels();
+
+    // UI Controls
+    private Grid<ItemModels> grid = default!;
+    private Modal addModal = default!;
+    private Modal scanModal = default!;
+    private string errorMessage = "";
+
+    // Search & Filter Params
+    private string searchText = "";
+    private int filterStatus = 0; // 0 = ทั้งหมด
+
+    // Scanner
+    private bool isScanning = false;
+    private DotNetObjectReference<ItemPage>? objRef;
+
+    // Config
+    private long maxFileSize = 1024 * 1024 * 5;
+
+    protected override void OnInitialized()
+    {
+        FetchData();
+    }
+
+    // --- Grid Data Provider (Logic การกรองอยู่ที่นี่) ---
+    private async Task<GridDataProviderResult<ItemModels>> ItemsDataProvider(GridDataProviderRequest<ItemModels> request)
+    {
+        // 1. ถ้ายังไม่มีข้อมูล ให้โหลดจาก DB
+        if (items is null || items.Count == 0) FetchData();
+
+        // 2. เริ่ม Query ข้อมูลใน Memory
+        var result = items.AsEnumerable();
+
+        // 3. กรองตาม Search Text (ชื่อ, รายละเอียด, บาร์โค้ด)
+        if (!string.IsNullOrEmpty(searchText))
+        {
+            result = result.Where(x =>
+                (x.ItemName?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (x.ItemBarcode?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (x.Description?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false)
+            );
+        }
+
+        // 4. กรองตามสถานะ
+        if (filterStatus != 0)
+        {
+            result = result.Where(x => (int)x.ItemStatus == filterStatus);
+        }
+
+        // 5. ส่งผลลัพธ์ให้ Grid จัดการ (Sort/Page)
+        return await Task.FromResult(request.ApplyTo(result));
+    }
+
+    // --- UI Actions ---
+    private async Task SearchItem()
+    {
+        // สั่งให้ Grid ไปเรียก ItemsDataProvider ใหม่
+        await grid.RefreshDataAsync();
+    }
+    // ฟังก์ชันรับค่าเมื่อ Dropdown เปลี่ยน
+    private async Task OnStatusChanged(ChangeEventArgs e)
+    {
+        // 1. รับค่าจาก Dropdown (ที่เป็น String) แปลงเป็น Int
+        if (int.TryParse(e.Value?.ToString(), out int result))
+        {
+            filterStatus = result;
+        }
+
+        // 2. สั่ง Grid ให้โหลดข้อมูลใหม่ (ซึ่งจะไปเรียก ItemsDataProvider เอง)
+        await grid.RefreshDataAsync();
+    }
+    private async Task ClearSearch()
+    {
+        searchText = "";
+        filterStatus = 0;
+        await grid.RefreshDataAsync();
+    }
+
+    private async Task ShowAddModal()
+    {
+        newItem = new ItemModels();
+        errorMessage = "";
+        await addModal.ShowAsync();
+    }
+    private async Task HideAddModal() => await addModal.HideAsync();
+
+    // --- Scanner Logic ---
+    private async Task OpenScanModal()
+    {
+        await scanModal.ShowAsync();
+        await Task.Delay(300);
+        objRef = DotNetObjectReference.Create(this);
+        await JSRuntime.InvokeVoidAsync("startScanner", objRef);
+    }
+
+    private async Task CloseScanModal()
+    {
+        await JSRuntime.InvokeVoidAsync("stopScanner");
+        await scanModal.HideAsync();
+        objRef?.Dispose();
+    }
+
+    [JSInvokable]
+    public async Task OnScanResult(string barcode)
+    {
+        searchText = barcode; // เอาค่าสแกนใส่ช่องค้นหา
+        await CloseScanModal();
+        await SearchItem(); // สั่งค้นหาทันที
+        StateHasChanged();
+    }
+
+    // --- Database Fetch ---
+    private void FetchData()
+    {
+        try
+        {
+            items.Clear();
+            using (NpgsqlConnection conn = new Myconnection().GetConnection())
+            {
+                using (NpgsqlCommand cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = @"
+                    SELECT ""Id"", ""ItemName"", ""Description"", ""ItemBarcode"", ""ItemStatus"", ""ItemImage""
+                    FROM public.item_tb
+                    ORDER BY ""Id"" DESC";
+
+                    using (NpgsqlDataReader reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            items.Add(new ItemModels()
+                            {
+                                Id = Convert.ToInt32(reader["Id"]),
+                                ItemName = reader["ItemName"].ToString(),
+                                Description = reader["Description"] != DBNull.Value ? reader["Description"].ToString() : "",
+                                ItemBarcode = reader["ItemBarcode"] != DBNull.Value ? reader["ItemBarcode"].ToString() : "",
+                                ItemStatus = (ItemStatus)Convert.ToInt32(reader["ItemStatus"]),
+                                ItemImage = reader["ItemImage"] != DBNull.Value ? reader["ItemImage"].ToString() : ""
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error: {ex.Message}");
+        }
+    }
+
+    // --- Upload Logic ---
+    private async Task HandleImageUpload(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file != null)
+        {
+            try
+            {
+                var fileExtension = Path.GetExtension(file.Name);
+                var newFileName = $"{Guid.NewGuid()}{fileExtension}";
+                var uploadFolder = Path.Combine(WebHostEnvironment.WebRootPath, "uploads");
+
+                if (!Directory.Exists(uploadFolder)) Directory.CreateDirectory(uploadFolder);
+
+                var filePath = Path.Combine(uploadFolder, newFileName);
+                await using (var fs = new FileStream(filePath, FileMode.Create))
+                {
+                    await file.OpenReadStream(maxFileSize).CopyToAsync(fs);
+                }
+
+                newItem.ItemImage = $"/uploads/{newFileName}";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Upload Failed: {ex.Message}");
+            }
+        }
+    }
+
+    // --- Database Save ---
+    private async Task SaveItem()
+    {
+        errorMessage = "";
+        try
+        {
+            using (NpgsqlConnection conn = new Myconnection().GetConnection())
+            {
+                // Check Duplicate
+                using (NpgsqlCommand checkCmd = conn.CreateCommand())
+                {
+                    checkCmd.CommandText = @"SELECT COUNT(*) FROM public.item_tb WHERE ""ItemBarcode"" = @barcode";
+                    checkCmd.Parameters.AddWithValue("barcode", newItem.ItemBarcode ?? "");
+                    long count = Convert.ToInt64(checkCmd.ExecuteScalar());
+
+                    if (count > 0)
+                    {
+                        errorMessage = $"บาร์โค้ด '{newItem.ItemBarcode}' มีอยู่ในระบบแล้ว!";
+                        return;
+                    }
+                }
+
+                // Insert
+                using (NpgsqlCommand cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = @"
+                        INSERT INTO public.item_tb (""ItemName"", ""Description"", ""ItemBarcode"", ""ItemStatus"", ""ItemImage"")
+                        VALUES (@name, @desc, @barcode, @status, @image)";
+
+                    cmd.Parameters.AddWithValue("name", newItem.ItemName);
+                    cmd.Parameters.AddWithValue("desc", newItem.Description ?? "");
+                    cmd.Parameters.AddWithValue("barcode", newItem.ItemBarcode ?? "");
+                    cmd.Parameters.AddWithValue("status", (int)newItem.ItemStatus);
+                    cmd.Parameters.AddWithValue("image", newItem.ItemImage ?? "");
+
+                    cmd.ExecuteNonQuery();
+                }
+            }
+
+            await HideAddModal();
+            newItem = new ItemModels();
+            errorMessage = "";
+
+            FetchData(); // โหลดข้อมูลใหม่
+            await grid.RefreshDataAsync(); // สั่ง Grid แสดงผลใหม่
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"เกิดข้อผิดพลาด: {ex.Message}";
+        }
+    }
+}
