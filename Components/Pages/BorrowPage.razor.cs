@@ -17,32 +17,37 @@ namespace itasa_app.Components.Pages
         public List<BorrowModels> borrowList = new List<BorrowModels>();
         public List<DepartmentModels> departmentList = new List<DepartmentModels>();
         public List<ItemModels> itemList = new List<ItemModels>();
+        private bool isUploading = false;
 
         // --- UI Control Variables ---
-        // ✅ ประกาศตัวแปร Grid เพื่อสั่ง Refresh ข้อมูล
         private Grid<BorrowModels> borrowGrid = default!;
         private Modal returnModal = default!;
+
+        // ตัวแปรสำหรับ Modal อัปโหลดรูป และจำ ID
+        private Modal uploadModal = default!;
+        private List<int> savedTransactionIds = new List<int>();
 
         public BorrowModels editingBorrow = new BorrowModels();
         public string errorMessage = "";
 
-        // --- File Upload ---
-        private IBrowserFile? selectedFile;
-        private string previewImage = "";
-        private const long MaxFileSize = 5 * 1024 * 1024; // 5MB
+        // --- File Upload (✅ แก้ไขให้เหมือน ItemPage) ---
+        // ไม่ต้องเก็บ IBrowserFile แล้ว เก็บแค่ Path ที่อัปโหลดเสร็จแล้ว
+        private string uploadedImagePath = "";
+        private const long MaxFileSize = 10 * 1024 * 1024; // 10MB
 
         // --- Search & Filter ---
-        // ❌ filteredBorrowList ไม่ต้องใช้แล้ว เพราะ Grid จัดการเองผ่าน DataProvider
-        // public List<BorrowModels> filteredBorrowList = new List<BorrowModels>(); 
-
         public string searchText = "";
         public int filterStatus = 0;
 
         // --- Forms & Models ---
         public BorrowModels newBorrow = new BorrowModels();
-        public List<ItemModels> cartList = new List<ItemModels>(); // ตะกร้าสินค้า
+        public List<ItemModels> cartList = new List<ItemModels>();
+
+        // --- AutoComplete Variables ---
+        private ItemModels tempSelectedItem;
         public int tempSelectedItemId { get; set; }
         public string tempSelectedBarcode { get; set; } = "";
+        private string tempSearchText = "";
 
         protected override async Task OnInitializedAsync()
         {
@@ -51,29 +56,30 @@ namespace itasa_app.Components.Pages
 
             LoadDepartments();
             LoadItems();
-            LoadBorrowData(); // โหลดข้อมูลตั้งต้นเข้า borrowList
+            LoadBorrowData();
         }
 
-        // --- Logic: เลือกของใส่ตะกร้า (Cart) ---
-        public void OnItemSelected(int selectedId)
-        {
-            tempSelectedItemId = selectedId;
-            var item = itemList.FirstOrDefault(i => i.Id == selectedId);
-            tempSelectedBarcode = item != null ? item.ItemBarcode : "";
-            StateHasChanged();
-        }
-
+        // --- Logic: เลือกของใส่ตะกร้า ---
         public void AddToCart()
         {
-            if (tempSelectedItemId == 0) return;
-            if (cartList.Any(x => x.Id == tempSelectedItemId)) return;
+            if (tempSelectedItem == null) return;
 
-            var item = itemList.FirstOrDefault(i => i.Id == tempSelectedItemId);
-            if (item != null) cartList.Add(item);
+            if ((int)tempSelectedItem.ItemStatus == 2)
+            {
+                errorMessage = $"อุปกรณ์ '{tempSelectedItem.ItemName}' ถูกยืมไปแล้ว ไม่สามารถยืมซ้ำได้";
+                StateHasChanged();
+                return;
+            }
 
-            // Reset selection
+            if (cartList.Any(x => x.Id == tempSelectedItem.Id)) return;
+
+            cartList.Add(tempSelectedItem);
+
+            tempSelectedItem = null;
             tempSelectedItemId = 0;
             tempSelectedBarcode = "";
+            tempSearchText = "";
+            errorMessage = "";
         }
 
         public void RemoveFromCart(ItemModels item)
@@ -81,7 +87,7 @@ namespace itasa_app.Components.Pages
             cartList.Remove(item);
         }
 
-        // --- Logic: บันทึกการยืม (Save Borrow) ---
+        // --- Logic: บันทึกข้อมูล (Step 1 - บันทึกรายการยืมก่อน) ---
         public async Task SaveBorrow()
         {
             if (cartList.Count == 0)
@@ -92,24 +98,10 @@ namespace itasa_app.Components.Pages
 
             try
             {
+                savedTransactionIds.Clear();
                 var dept = departmentList.FirstOrDefault(d => d.DepartmentCode == newBorrow.DepartmentCode);
                 string deptName = dept != null ? dept.DepartmentName : "";
 
-                // Upload Image
-                string? uploadedPath = null;
-                if (selectedFile != null)
-                {
-                    var newFileName = $"{Guid.NewGuid()}{Path.GetExtension(selectedFile.Name)}";
-                    var folderPath = Path.Combine(env.WebRootPath, "uploads");
-                    if (!Directory.Exists(folderPath)) Directory.CreateDirectory(folderPath);
-
-                    var fullPath = Path.Combine(folderPath, newFileName);
-                    await using FileStream fs = new(fullPath, FileMode.Create);
-                    await selectedFile.OpenReadStream(MaxFileSize).CopyToAsync(fs);
-                    uploadedPath = $"/uploads/{newFileName}";
-                }
-
-                // Database Transaction
                 using (var conn = new Myconnection().GetConnection())
                 {
                     if (conn.State != ConnectionState.Open) await conn.OpenAsync();
@@ -120,19 +112,16 @@ namespace itasa_app.Components.Pages
                         {
                             foreach (var item in cartList)
                             {
-                                // 1. Insert Borrow Record
                                 using (var cmd = conn.CreateCommand())
                                 {
                                     cmd.Transaction = trans;
-
-                                    // ⚠️ ถ้า Database ยังไม่มี column "DepartmentCode" บรรทัดนี้จะ Error 42703
-                                    // ต้องไป Alter Table ใน pgAdmin ก่อนครับ
                                     cmd.CommandText = @"
                                         INSERT INTO public.borrow_tb
                                         (""BorrowerName"", ""Department"", ""DepartmentCode"", ""Equipment"", ""Barcode"", 
-                                         ""BorrowDate"", ""DueDate"", ""Status"", ""ItemId"", ""PhotoPath"")
+                                         ""BorrowDate"", ""DueDate"", ""Status"", ""ItemId"") 
                                         VALUES
-                                        (@name, @deptName, @deptCode, @equip, @barcode, @bDate, @dDate, @status, @itemId, @photo)";
+                                        (@name, @deptName, @deptCode, @equip, @barcode, @bDate, @dDate, @status, @itemId)
+                                        RETURNING ""Id""";
 
                                     cmd.Parameters.AddWithValue("name", newBorrow.BorrowerName);
                                     cmd.Parameters.AddWithValue("deptName", deptName);
@@ -143,12 +132,14 @@ namespace itasa_app.Components.Pages
                                     cmd.Parameters.AddWithValue("dDate", (object)newBorrow.DueDate ?? DBNull.Value);
                                     cmd.Parameters.AddWithValue("status", (short)BorrowStatus.Borrowed);
                                     cmd.Parameters.AddWithValue("itemId", item.Id);
-                                    cmd.Parameters.AddWithValue("photo", uploadedPath ?? (object)DBNull.Value);
 
-                                    await cmd.ExecuteNonQueryAsync();
+                                    var newIdObj = await cmd.ExecuteScalarAsync();
+                                    if (newIdObj != null)
+                                    {
+                                        savedTransactionIds.Add(Convert.ToInt32(newIdObj));
+                                    }
                                 }
 
-                                // 2. Update Item Status -> Borrowed (2)
                                 using (var updateCmd = conn.CreateCommand())
                                 {
                                     updateCmd.Transaction = trans;
@@ -167,26 +158,137 @@ namespace itasa_app.Components.Pages
                     }
                 }
 
-                // Cleanup & Refresh
-                cartList.Clear();
-                newBorrow = new BorrowModels { BorrowDate = DateTime.Now, DueDate = DateTime.Now };
-                selectedFile = null;
-                previewImage = "";
-                errorMessage = "";
-
-                LoadBorrowData(); // โหลดข้อมูลใหม่เข้า List
-                LoadItems();      // โหลดสถานะของใหม่ (ของที่ถูกยืมจะหายไปจาก dropdown)
-
-                // ✅ สั่ง Grid ให้แสดงข้อมูลใหม่
-                await borrowGrid.RefreshDataAsync();
+                // ✅ Clear รูปเก่าทิ้ง ก่อนเปิด Modal
+                ClearImage();
+                await uploadModal.ShowAsync();
             }
             catch (Exception ex)
             {
-                errorMessage = "บันทึกไม่สำเร็จ: " + ex.Message;
+                errorMessage = "บันทึกข้อมูลไม่สำเร็จ: " + ex.Message;
             }
         }
 
-        // --- Logic: การคืนของ (Return) ---
+        // --- ✅ Helper Methods: Upload (แบบ ItemPage) ---
+        // 1. เมธอดนี้จะทำงานทันทีที่เลือกไฟล์ (InputFile OnChange)
+        private async Task HandleImageUpload(InputFileChangeEventArgs e)
+        {
+            var file = e.File;
+            if (file != null)
+            {
+                try
+                {
+                    isUploading = true;
+                    StateHasChanged();
+
+                    // สร้างชื่อไฟล์
+                    var fileExtension = Path.GetExtension(file.Name);
+                    var newFileName = $"{Guid.NewGuid()}{fileExtension}";
+                    var uploadFolder = Path.Combine(env.WebRootPath, "uploads");
+
+                    if (!Directory.Exists(uploadFolder)) Directory.CreateDirectory(uploadFolder);
+
+                    var filePath = Path.Combine(uploadFolder, newFileName);
+
+                    // ✅ บันทึกลง Disk ทันที
+                    await using (var fs = new FileStream(filePath, FileMode.Create))
+                    {
+                        // ถ้าไฟล์ใหญ่ หรือต้องการ Resize สามารถใช้ logic RequestImageFileAsync ตรงนี้ได้
+                        // ตัวอย่าง: ถ้าต้องการ Resize ก่อนเซฟ
+                        // var resizedFile = await file.RequestImageFileAsync(file.ContentType, 800, 800);
+                        // await resizedFile.OpenReadStream(MaxFileSize).CopyToAsync(fs);
+
+                        // บันทึกไฟล์ต้นฉบับ
+                        await file.OpenReadStream(MaxFileSize).CopyToAsync(fs);
+                    }
+
+                    // ✅ เก็บ Path ไว้เตรียมอัปเดต DB
+                    uploadedImagePath = $"/uploads/{newFileName}";
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = "อัปโหลดไฟล์ไม่สำเร็จ: " + ex.Message;
+                }
+                finally
+                {
+                    isUploading = false;
+                    StateHasChanged();
+                }
+            }
+        }
+
+        // 2. เมธอดสำหรับลบรูป (ลบ Path ออกจากตัวแปร)
+        private void ClearImage()
+        {
+            uploadedImagePath = "";
+        }
+
+        // --- Logic: อัปเดต Path รูปเข้า DB (Step 2) ---
+        // เมธอดนี้จะทำงานเมื่อกดปุ่ม "ยืนยัน/จบงาน" ใน Modal
+        public async Task SaveImageToDb()
+        {
+            // ถ้าไม่มีรายการ transaction หรือ ยังไม่ได้อัปโหลดรูป ให้ข้าม
+            if (savedTransactionIds.Count == 0 || string.IsNullOrEmpty(uploadedImagePath))
+            {
+                await FinishTransaction();
+                return;
+            }
+
+            try
+            {
+                using (var conn = new Myconnection().GetConnection())
+                {
+                    if (conn.State != ConnectionState.Open) await conn.OpenAsync();
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        // อัปเดต PhotoPath ให้กับทุกรายการที่เพิ่งบันทึกไป
+                        string idsStr = string.Join(",", savedTransactionIds);
+                        cmd.CommandText = $@"UPDATE public.borrow_tb SET ""PhotoPath"" = @path WHERE ""Id"" IN ({idsStr})";
+                        cmd.Parameters.AddWithValue("path", uploadedImagePath);
+                        await cmd.ExecuteNonQueryAsync();
+                    }
+                }
+
+                await FinishTransaction();
+            }
+            catch (Exception ex)
+            {
+                errorMessage = "บันทึกรูปภาพลงฐานข้อมูลไม่สำเร็จ: " + ex.Message;
+                // ถ้า Error ตรงนี้ อาจจะเลือกที่จะปิด Modal หรือให้ลองใหม่
+            }
+        }
+
+        public async Task FinishTransaction()
+        {
+            await uploadModal.HideAsync();
+
+            cartList.Clear();
+            newBorrow = new BorrowModels { BorrowDate = DateTime.Now, DueDate = DateTime.Now };
+            ClearImage();
+            savedTransactionIds.Clear();
+            errorMessage = "";
+
+            LoadBorrowData();
+            LoadItems();
+            await borrowGrid.RefreshDataAsync();
+        }
+
+        // --- Mobile View Filter ---
+        private IEnumerable<BorrowModels> GetFilteredItemsForMobile()
+        {
+            var result = borrowList.AsEnumerable();
+            if (filterStatus != 0) result = result.Where(x => (int)x.Status == filterStatus);
+            if (!string.IsNullOrEmpty(searchText))
+            {
+                result = result.Where(x =>
+                    (x.BorrowerName?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (x.Equipment?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (x.Barcode?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false)
+                );
+            }
+            return result.OrderByDescending(x => x.Id);
+        }
+
+        // --- Logic: Return ---
         public async Task OpenReturnModal(BorrowModels b)
         {
             editingBorrow = new BorrowModels
@@ -201,10 +303,7 @@ namespace itasa_app.Components.Pages
             await returnModal.ShowAsync();
         }
 
-        public async Task CloseReturnModal()
-        {
-            await returnModal.HideAsync();
-        }
+        public async Task CloseReturnModal() => await returnModal.HideAsync();
 
         public async Task SaveReturn()
         {
@@ -212,27 +311,17 @@ namespace itasa_app.Components.Pages
             {
                 using (var conn = new Myconnection().GetConnection())
                 {
-                    // 1. Update Borrow Status
+                    if (conn.State != ConnectionState.Open) await conn.OpenAsync();
+
                     using (var cmd = conn.CreateCommand())
                     {
-                        cmd.CommandText = @"
-                            UPDATE public.borrow_tb 
-                            SET ""Status"" = @status, 
-                                ""ReturnDate"" = @rDate
-                            WHERE ""Id"" = @id";
-
+                        cmd.CommandText = @"UPDATE public.borrow_tb SET ""Status"" = @status, ""ReturnDate"" = @rDate WHERE ""Id"" = @id";
                         cmd.Parameters.AddWithValue("status", (short)editingBorrow.Status);
                         cmd.Parameters.AddWithValue("id", editingBorrow.Id);
-
-                        if (editingBorrow.Status == BorrowStatus.Return)
-                            cmd.Parameters.AddWithValue("rDate", editingBorrow.ReturnDate ?? DateTime.Now);
-                        else
-                            cmd.Parameters.AddWithValue("rDate", DBNull.Value);
-
+                        cmd.Parameters.AddWithValue("rDate", editingBorrow.Status == BorrowStatus.Return ? editingBorrow.ReturnDate ?? DateTime.Now : DBNull.Value);
                         await cmd.ExecuteNonQueryAsync();
                     }
 
-                    // 2. ถ้าคืนของ -> ปลดล็อค Item เป็น Ready (1)
                     if (editingBorrow.Status == BorrowStatus.Return && editingBorrow.ItemId != 0)
                     {
                         using (var itemCmd = conn.CreateCommand())
@@ -243,55 +332,20 @@ namespace itasa_app.Components.Pages
                         }
                     }
                 }
-
                 await CloseReturnModal();
                 LoadBorrowData();
                 LoadItems();
-
-                // ✅ สั่ง Refresh Grid
                 await borrowGrid.RefreshDataAsync();
             }
-            catch (Exception ex)
-            {
-                errorMessage = "อัปเดตสถานะไม่สำเร็จ: " + ex.Message;
-            }
+            catch (Exception ex) { errorMessage = "อัปเดตสถานะไม่สำเร็จ: " + ex.Message; }
         }
 
-        // --- Helper Methods ---
-        private async Task LoadFiles(InputFileChangeEventArgs e)
-        {
-            try
-            {
-                selectedFile = e.File;
-                var format = "image/png";
-                var resizedImage = await selectedFile.RequestImageFileAsync(format, 300, 300);
-                var buffer = new byte[resizedImage.Size];
-                await resizedImage.OpenReadStream().ReadAsync(buffer);
-                var imageData = Convert.ToBase64String(buffer);
-                previewImage = $"data:{format};base64,{imageData}";
-            }
-            catch (Exception ex) { errorMessage = "โหลดรูปไม่สำเร็จ: " + ex.Message; }
-        }
-
-        // ❌ เอาฟังก์ชัน FilterData แบบเก่าออก (เพราะใช้ DataProvider แทนแล้ว)
-        // public void FilterData() { ... }
-
-        // --- Grid Data Provider (หัวใจสำคัญของ Grid) ---
+        // --- Grid & AutoComplete Data Provider ---
         private async Task<GridDataProviderResult<BorrowModels>> BorrowDataProvider(GridDataProviderRequest<BorrowModels> request)
         {
-            // ถ้า borrowList ยังว่าง ให้โหลดข้อมูลจาก DB ก่อน
             if (borrowList == null || borrowList.Count == 0) LoadBorrowData();
-
-            // เริ่ม Query จาก borrowList ที่มีอยู่ใน Memory
             var result = borrowList.AsEnumerable();
-
-            // 1. กรองสถานะ
-            if (filterStatus != 0)
-            {
-                result = result.Where(x => (int)x.Status == filterStatus);
-            }
-
-            // 2. กรองคำค้นหา
+            if (filterStatus != 0) result = result.Where(x => (int)x.Status == filterStatus);
             if (!string.IsNullOrEmpty(searchText))
             {
                 result = result.Where(x =>
@@ -300,23 +354,43 @@ namespace itasa_app.Components.Pages
                     (x.Barcode?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false)
                 );
             }
-
-            // ส่งผลลัพธ์ให้ Grid ไปจัดการ Sort/Page ต่อเอง
             return await Task.FromResult(request.ApplyTo(result));
         }
 
-        // ปุ่มค้นหา -> สั่ง Grid ให้โหลดข้อมูลใหม่ (ซึ่งจะวิ่งไปเรียก BorrowDataProvider)
-        private async Task SearchBorrow()
+        private async Task SearchBorrow() => await borrowGrid.RefreshDataAsync();
+        private async Task ClearSearch() { searchText = ""; filterStatus = 0; await borrowGrid.RefreshDataAsync(); }
+
+        private async Task<AutoCompleteDataProviderResult<ItemModels>> EquipmentDataProvider(AutoCompleteDataProviderRequest<ItemModels> request)
         {
-            await borrowGrid.RefreshDataAsync();
+            var query = itemList.Where(x => !cartList.Any(c => c.Id == x.Id)).AsQueryable();
+
+            if (!string.IsNullOrEmpty(request.Filter.Value))
+            {
+                var term = request.Filter.Value.ToLower();
+                query = query.Where(x => x.ItemName.ToLower().Contains(term) || x.ItemBarcode.ToLower().Contains(term));
+            }
+            else
+            {
+                query = query.Take(50);
+            }
+            return await Task.FromResult(request.ApplyTo(query));
         }
 
-        // ปุ่ม Reset
-        private async Task ClearSearch()
+        private void OnAutoCompleteChanged(ItemModels selectedItem)
         {
-            searchText = "";
-            filterStatus = 0;
-            await borrowGrid.RefreshDataAsync();
+            tempSelectedItem = selectedItem;
+
+            if (selectedItem != null)
+            {
+                tempSelectedItemId = selectedItem.Id;
+                tempSelectedBarcode = selectedItem.ItemBarcode;
+            }
+            else
+            {
+                tempSelectedItemId = 0;
+                tempSelectedBarcode = "";
+            }
+            StateHasChanged();
         }
 
         // --- Database Loaders ---
@@ -327,6 +401,7 @@ namespace itasa_app.Components.Pages
                 departmentList.Clear();
                 using (var conn = new Myconnection().GetConnection())
                 {
+                    if (conn.State != ConnectionState.Open) conn.Open();
                     using (var cmd = new NpgsqlCommand(@"SELECT ""Id"", ""DepartmentName"", ""DepartmentCode"" FROM public.department_tb", conn))
                     using (var r = cmd.ExecuteReader())
                     {
@@ -352,6 +427,7 @@ namespace itasa_app.Components.Pages
                 itemList.Clear();
                 using (var conn = new Myconnection().GetConnection())
                 {
+                    if (conn.State != ConnectionState.Open) conn.Open();
                     using (var cmd = new NpgsqlCommand(@"SELECT ""Id"", ""ItemName"", ""ItemBarcode"", ""ItemStatus"" FROM public.item_tb", conn))
                     using (var r = cmd.ExecuteReader())
                     {
@@ -379,13 +455,8 @@ namespace itasa_app.Components.Pages
                 errorMessage = "";
                 using (var conn = new Myconnection().GetConnection())
                 {
-                    // ⚠️ ระวัง: เช็คชื่อคอลัมน์ DepartmentCode ใน DB ให้ชัวร์ว่ามีแล้ว
-                    using (var cmd = new NpgsqlCommand(@"
-                        SELECT ""Id"", ""BorrowerName"", ""Department"", ""DepartmentCode"", ""Equipment"",
-                               ""Barcode"", ""BorrowDate"", ""DueDate"", ""ReturnDate"",
-                               ""Status"", ""PhotoPath"", ""ItemId""
-                        FROM public.borrow_tb 
-                        ORDER BY ""Id"" DESC", conn))
+                    if (conn.State != ConnectionState.Open) conn.Open();
+                    using (var cmd = new NpgsqlCommand(@"SELECT ""Id"", ""BorrowerName"", ""Department"", ""DepartmentCode"", ""Equipment"", ""Barcode"", ""BorrowDate"", ""DueDate"", ""ReturnDate"", ""Status"", ""PhotoPath"", ""ItemId"" FROM public.borrow_tb ORDER BY ""Id"" DESC", conn))
                     using (var reader = cmd.ExecuteReader())
                     {
                         while (reader.Read())
@@ -398,16 +469,11 @@ namespace itasa_app.Components.Pages
                             b.Equipment = reader["Equipment"]?.ToString() ?? "";
                             b.Barcode = reader["Barcode"]?.ToString() ?? "";
                             b.PhotoPath = reader["PhotoPath"]?.ToString();
-
                             b.BorrowDate = MapDate(reader["BorrowDate"]);
                             b.DueDate = MapDate(reader["DueDate"]);
                             b.ReturnDate = MapDate(reader["ReturnDate"]);
-
-                            if (reader["Status"] != DBNull.Value)
-                                b.Status = (BorrowStatus)Convert.ToInt16(reader["Status"]);
-
+                            if (reader["Status"] != DBNull.Value) b.Status = (BorrowStatus)Convert.ToInt16(reader["Status"]);
                             b.ItemId = reader["ItemId"] != DBNull.Value ? Convert.ToInt32(reader["ItemId"]) : 0;
-
                             borrowList.Add(b);
                         }
                     }
@@ -415,22 +481,19 @@ namespace itasa_app.Components.Pages
             }
             catch (Exception ex) { errorMessage = "โหลดข้อมูลไม่สำเร็จ: " + ex.Message; }
         }
+
         private async Task OnStatusChanged(ChangeEventArgs e)
         {
-            // 1. แปลงค่าที่เลือกเป็น int
-            if (int.TryParse(e.Value?.ToString(), out int result))
-            {
-                filterStatus = result;
-            }
-
-            // 2. สั่งให้ Grid โหลดข้อมูลใหม่ทันที
+            if (int.TryParse(e.Value?.ToString(), out int result)) filterStatus = result;
             await borrowGrid.RefreshDataAsync();
         }
+
         private async Task OnSearchTextChanged(ChangeEventArgs e)
         {
             searchText = e.Value?.ToString() ?? "";
             await borrowGrid.RefreshDataAsync();
         }
+
         private DateTime? MapDate(object dbValue)
         {
             if (dbValue == DBNull.Value || dbValue == null) return null;

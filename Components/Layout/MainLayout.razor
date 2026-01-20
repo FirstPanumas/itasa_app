@@ -1,12 +1,15 @@
 ﻿@inherits LayoutComponentBase
 @using BlazorBootstrap
 
+@* ✅ ส่วนที่เพิ่ม: ปรับความกว้างของ Sidebar *@
+ 
 <div class="bb-page">
 
     <Sidebar @ref="sidebar"
              IconName="IconName.Boxes"
-             Title="BKN IT "
-             DataProvider="SidebarDataProvider" />
+             Title="BKN IT"
+             DataProvider="SidebarDataProvider"
+              />
 
     <main>
         @* --- ส่วนแถบด้านบน (จำเป็นสำหรับ Mobile Toggle) --- *@
@@ -61,8 +64,15 @@
                 IconName = IconName.BuildingFill,
                 Text = "แผนก"
             },
+             new NavItem
+        {
+            Id = "4",
+            Href = "/signature", // ต้องตรงกับ @page "/signature"
+            IconName = IconName.PenFill, // รูปปากกา
+            Text = "เซ็นชื่อรับรอง"
+        },
         };
-
+       
         return navItems;
     }
 }

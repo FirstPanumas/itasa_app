@@ -56,6 +56,87 @@
             alert("ไม่สามารถเปิดกล้องได้: " + err);
         });
     };
+
+        window.setupSignaturePad = (canvasId) => {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+
+            // ปรับความละเอียดให้คมชัดขึ้น (ป้องกันเส้นแตก)
+            const ratio = Math.max(window.devicePixelRatio || 1, 1);
+            canvas.width = canvas.offsetWidth * ratio;
+            canvas.height = canvas.offsetHeight * ratio;
+            canvas.getContext("2d").scale(ratio, ratio);
+
+            const ctx = canvas.getContext('2d');
+            ctx.lineWidth = 3; // เส้นหนาขึ้นนิดนึง
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.strokeStyle = '#000000';
+
+            let isDrawing = false;
+            let lastX = 0;
+            let lastY = 0;
+
+            function getPos(e) {
+                const rect = canvas.getBoundingClientRect();
+                let clientX = e.clientX;
+                let clientY = e.clientY;
+
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                }
+                return {
+                    x: clientX - rect.left,
+                    y: clientY - rect.top
+                };
+            }
+
+            function draw(e) {
+                if (!isDrawing) return;
+                if(e.type.startsWith('touch')) e.preventDefault(); // กันจอมือถือเลื่อน
+
+                const pos = getPos(e);
+                ctx.beginPath();
+                ctx.moveTo(lastX, lastY);
+                ctx.lineTo(pos.x, pos.y);
+                ctx.stroke();
+                [lastX, lastY] = [pos.x, pos.y];
+            }
+
+            // Mouse Events
+            canvas.addEventListener('mousedown', (e) => {
+                isDrawing = true;
+                const pos = getPos(e);
+                [lastX, lastY] = [pos.x, pos.y];
+            });
+            canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('mouseup', () => isDrawing = false);
+            canvas.addEventListener('mouseout', () => isDrawing = false);
+
+            // Touch Events
+            canvas.addEventListener('touchstart', (e) => {
+                isDrawing = true;
+                const pos = getPos(e);
+                [lastX, lastY] = [pos.x, pos.y];
+            }, { passive: false });
+            canvas.addEventListener('touchmove', draw, { passive: false });
+            canvas.addEventListener('touchend', () => isDrawing = false);
+        };
+
+        // 2. ล้างกระดาน
+        window.clearSignaturePad = (canvasId) => {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            // ต้อง clear ตามขนาดจริงที่คูณ ratio แล้ว
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        };
+
+        // 3. ดึงรูปภาพออกไปใช้
+        window.getSignatureImage = (canvasId) => {
+            const canvas = document.getElementById(canvasId);
+            return canvas.toDataURL("image/png");
+        };
 </script>
 </body>
 

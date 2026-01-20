@@ -13,7 +13,6 @@
     </Alert>
 }
 
-@* --- ส่วนฟอร์มยืม (ปรับให้ Button Responsive นิดหน่อย) --- *@
 <div class="card p-3 mb-4 shadow-sm">
     <EditForm Model="@newBorrow" OnValidSubmit="SaveBorrow">
         <DataAnnotationsValidator />
@@ -46,48 +45,62 @@
             </div>
         </div>
 
-        <div class="mb-3">
-            <label class="form-label">รูปภาพประกอบ:</label>
-            <InputFile OnChange="LoadFiles" class="form-control" accept=".png,.jpg,.jpeg" />
-            @if (!string.IsNullOrEmpty(previewImage))
-            {
-                <div class="mt-2">
-                    <img src="@previewImage" width="150" class="img-thumbnail rounded" />
-                </div>
-            }
-        </div>
         <hr />
 
         <div class="card bg-light mb-3 border-0">
             <div class="card-body">
                 <h5 class="card-title text-primary"><Icon Name="IconName.CartPlus" /> 2. เลือกอุปกรณ์</h5>
+
                 <div class="row align-items-end">
                     <div class="col-md-5 mb-2">
-                        <label class="form-label">รายการอุปกรณ์ (ว่าง):</label>
-                        <InputSelect Value="tempSelectedItemId"
-                                     ValueChanged="@((int id) => OnItemSelected(id))"
-                                     ValueExpression="@(() => tempSelectedItemId)"
-                                     class="form-select">
-                            <option value="0">-- เลือกอุปกรณ์ --</option>
-                            @foreach (var item in itemList)
+                        <label class="form-label">ค้นหาอุปกรณ์:</label>
+                        <AutoComplete @bind-Value="tempSearchText"
+                                      TItem="ItemModels"
+                                      DataProvider="EquipmentDataProvider"
+                                      PropertyName="ItemName"
+                                      Placeholder="คลิกเพื่อเลือก หรือ พิมพ์ชื่อ..."
+                                      OnChanged="(ItemModels item) => OnAutoCompleteChanged(item)" />
+                    </div>
+
+                    <div class="col-md-4 mb-2">
+                        <label class="form-label">Barcode / สถานะ:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control bg-white" value="@tempSelectedBarcode" readonly />
+
+                            @if (tempSelectedItem != null)
                             {
-                                if (item.ItemStatus == ItemStatus.Ready && !cartList.Any(c => c.Id == item.Id))
+                                @* ✅ [แก้จุดที่ 1] เช็ค Status ด้วย int (2 = ถูกยืม) *@
+                                @if ((int)tempSelectedItem.ItemStatus == 2)
                                 {
-                                    <option value="@item.Id">@item.ItemName (@item.ItemBarcode)</option>
+                                    <span class="input-group-text bg-danger text-white">ถูกยืมอยู่</span>
+                                }
+                                else
+                                {
+                                    <span class="input-group-text bg-success text-white">ว่าง</span>
                                 }
                             }
-                        </InputSelect>
+                        </div>
                     </div>
-                    <div class="col-md-4 mb-2">
-                        <label class="form-label">Barcode:</label>
-                        <input type="text" class="form-control bg-white" value="@tempSelectedBarcode" readonly />
-                    </div>
+
                     <div class="col-md-3 mb-2">
-                        <Button Color="ButtonColor.Success" Class="w-100" @onclick="AddToCart">
+                        @* ✅ [แก้จุดที่ 2] เช็ค Status ที่ปุ่ม Add *@
+                        <Button Color="ButtonColor.Success"
+                                Class="w-100"
+                                @onclick="AddToCart"
+                                Disabled="@(tempSelectedItem == null || (int)tempSelectedItem.ItemStatus == 2)">
                             <Icon Name="IconName.PlusLg" /> เพิ่มรายการ
                         </Button>
                     </div>
                 </div>
+
+                @* ✅ [แก้จุดที่ 3] เช็ค Status ที่ Alert *@
+                @if (tempSelectedItem != null && (int)tempSelectedItem.ItemStatus == 2)
+                {
+                    <div class="alert alert-warning mt-2 mb-0 py-2">
+                        <Icon Name="IconName.ExclamationTriangleFill" />
+                        อุปกรณ์นี้ถูกยืมไปแล้ว ไม่สามารถทำรายการยืมซ้ำได้
+                    </div>
+                }
             </div>
         </div>
 
@@ -132,49 +145,38 @@
     </EditForm>
 </div>
 
-@* --- ส่วนประวัติการยืม (Responsive) --- *@
+@* --- ส่วนแสดงผล Grid/Cards และ Modals (Return, Upload) --- *@
 <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mt-5 mb-3 gap-2">
     <h4><Icon Name="IconName.ClockHistory" /> ประวัติการยืมล่าสุด</h4>
-
     <div class="d-flex gap-2 flex-wrap">
-        @* Dropdown Filter *@
         <select class="form-select" style="width: 150px;" value="@filterStatus" @onchange="OnStatusChanged">
             <option value="0">สถานะทั้งหมด</option>
             <option value="2">กำลังยืม</option>
             <option value="1">คืนแล้ว</option>
         </select>
-
-        @* Search Text *@
         <div class="input-group" style="width: 250px;">
             <span class="input-group-text"><Icon Name="IconName.Search" /></span>
             <input type="text" class="form-control" placeholder="ค้นหา..." value="@searchText" @onchange="OnSearchTextChanged" />
         </div>
-
         <Button Color="ButtonColor.Primary" @onclick="SearchBorrow"><Icon Name="IconName.Search" /></Button>
         <Button Color="ButtonColor.Secondary" @onclick="ClearSearch"><Icon Name="IconName.ArrowCounterclockwise" /></Button>
     </div>
 </div>
 
-@* ========================================== *@
-@* 💻 ส่วนที่ 1: Desktop View (แสดงเป็นตาราง) *@
-@* ========================================== *@
 <div class="d-none d-md-block">
-    <Grid @ref="borrowGrid"
-          TItem="BorrowModels"
-          Class="table table-hover table-bordered table-striped align-middle"
-          DataProvider="BorrowDataProvider"
-          AllowFiltering="false"
-          AllowPaging="true"
-          AllowSorting="true"
-          PageSize="10"
-          Responsive="true">
-
+    <Grid @ref="borrowGrid" TItem="BorrowModels" Class="table table-hover table-bordered table-striped align-middle" DataProvider="BorrowDataProvider" AllowFiltering="false" AllowPaging="true" AllowSorting="true" PageSize="10" Responsive="true">
         <GridColumns>
             <GridColumn TItem="BorrowModels" HeaderText="สถานะ" PropertyName="Status" TextAlignment="Alignment.Center">
-                @if (context.Status == BorrowStatus.Borrowed) { <Badge Color="BadgeColor.Warning" TextColor="TextColor.Dark">กำลังยืม</Badge> }
-                else { <Badge Color="BadgeColor.Success">คืนแล้ว</Badge> }
-            </GridColumn>
+                @if (context.Status == BorrowStatus.Borrowed)
+                {
+                    <Badge Color="BadgeColor.Warning" TextColor="TextColor.Dark">กำลังยืม</Badge>
+                }
+                else
+                {
 
+                    <Badge Color="BadgeColor.Success">คืนแล้ว</Badge>
+                }
+            </GridColumn>
             <GridColumn TItem="BorrowModels" HeaderText="จัดการ" TextAlignment="Alignment.Center" Sortable="false">
                 @if (context.Status == BorrowStatus.Borrowed)
                 {
@@ -182,32 +184,35 @@
                         <Icon Name="IconName.ArrowReturnLeft" /> คืนของ
                     </Button>
                 }
-                else { <span class="text-muted">-</span> }
-            </GridColumn>
+                else
+                {
 
+                    <span class="text-muted">-</span>
+                }
+            </GridColumn>
             <GridColumn TItem="BorrowModels" HeaderText="ผู้ยืม" PropertyName="BorrowerName" SortString="BorrowerName">@context.BorrowerName</GridColumn>
+            <GridColumn TItem="BorrowModels" HeaderText="แผนก" PropertyName="Department" SortString="Department">@context.Department</GridColumn>
             <GridColumn TItem="BorrowModels" HeaderText="อุปกรณ์" PropertyName="Equipment" SortString="Equipment">@context.Equipment</GridColumn>
             <GridColumn TItem="BorrowModels" HeaderText="Barcode" PropertyName="Barcode" SortString="Barcode">@context.Barcode</GridColumn>
-            <GridColumn TItem="BorrowModels" HeaderText="วันที่ยืม" PropertyName="BorrowDate" SortString="BorrowDate">@(context.BorrowDate.HasValue ? context.BorrowDate.Value.ToString("dd/MM/yy") : "-")</GridColumn>
-            <GridColumn TItem="BorrowModels" HeaderText="กำหนดคืน" PropertyName="DueDate" SortString="DueDate">@(context.DueDate.HasValue ? context.DueDate.Value.ToString("dd/MM/yy") : "-")</GridColumn>
-            <GridColumn TItem="BorrowModels" HeaderText="วันที่คืน" PropertyName="ReturnDate" SortString="ReturnDate">@(context.ReturnDate.HasValue ? context.ReturnDate.Value.ToString("dd/MM/yy") : "-")</GridColumn>
-            
+            <GridColumn TItem="BorrowModels" HeaderText="วันที่ยืม" PropertyName="BorrowDate" SortString="BorrowDate">@(context.BorrowDate.HasValue? context.BorrowDate.Value.ToString("dd/MM/yy") : "-")</GridColumn>
+            <GridColumn TItem="BorrowModels" HeaderText="กำหนดคืน" PropertyName="DueDate" SortString="DueDate">@(context.DueDate.HasValue? context.DueDate.Value.ToString("dd/MM/yy") : "-")</GridColumn>
+            <GridColumn TItem="BorrowModels" HeaderText="วันที่คืน" PropertyName="ReturnDate" SortString="ReturnDate">@(context.ReturnDate.HasValue? context.ReturnDate.Value.ToString("dd/MM/yy") : "-")</GridColumn>
             <GridColumn TItem="BorrowModels" HeaderText="รูปภาพ" TextAlignment="Alignment.Center" Sortable="false">
                 @if (!string.IsNullOrEmpty(context.PhotoPath))
                 {
                     <a href="@context.PhotoPath" target="_blank"><img src="@context.PhotoPath" width="40" height="40" style="object-fit: cover; border-radius: 5px;" /></a>
                 }
-                else { <Icon Name="IconName.Image" Class="text-secondary" /> }
+                else
+                {
+
+                    <Icon Name="IconName.Image" Class="text-secondary" />
+                }
             </GridColumn>
         </GridColumns>
     </Grid>
 </div>
 
-@* ========================================== *@
-@* 📱 ส่วนที่ 2: Mobile View (แสดงเป็นการ์ด)   *@
-@* ========================================== *@
 <div class="d-md-none">
-    @* ต้องกรองข้อมูลเอง เพราะ Grid ไม่ทำงานในโหมดนี้ *@
     @foreach (var item in GetFilteredItemsForMobile())
     {
         <div class="card mb-3 shadow-sm border-0">
@@ -217,29 +222,25 @@
                         <h5 class="card-title text-primary mb-0 fw-bold">@item.Equipment</h5>
                         <small class="text-muted">@item.Barcode</small>
                     </div>
-                    @if (item.Status == BorrowStatus.Borrowed) { <Badge Color="BadgeColor.Warning" TextColor="TextColor.Dark">กำลังยืม</Badge> }
-                    else { <Badge Color="BadgeColor.Success">คืนแล้ว</Badge> }
-                </div>
-
-                <div class="card-text small mb-3">
-                    <div class="d-flex justify-content-between">
-                        <span class="fw-bold">ผู้ยืม:</span> <span>@item.BorrowerName</span>
-                    </div>
-                    <div class="d-flex justify-content-between">
-                        <span class="fw-bold">วันที่ยืม:</span> <span>@(item.BorrowDate?.ToString("dd/MM/yy") ?? "-")</span>
-                    </div>
-                    <div class="d-flex justify-content-between">
-                        <span class="fw-bold text-danger">กำหนดคืน:</span> <span class="text-danger">@(item.DueDate?.ToString("dd/MM/yy") ?? "-")</span>
-                    </div>
-                    @if (item.ReturnDate.HasValue)
+                    @if (item.Status == BorrowStatus.Borrowed)
                     {
-                        <div class="d-flex justify-content-between">
-                            <span class="fw-bold text-success">วันที่คืน:</span>
-                            <span class="text-success">@item.ReturnDate.Value.ToString("dd/MM/yy")</span>
-                        </div>
+                        <Badge Color="BadgeColor.Warning" TextColor="TextColor.Dark">กำลังยืม</Badge>
+                    }
+                    else
+                    {
+
+                        <Badge Color="BadgeColor.Success">คืนแล้ว</Badge>
                     }
                 </div>
-
+                <div class="card-text small mb-3">
+                    <div class="d-flex justify-content-between"><span class="fw-bold">ผู้ยืม:</span> <span>@item.BorrowerName</span></div>
+                    <div class="d-flex justify-content-between"><span class="fw-bold">วันที่ยืม:</span> <span>@(item.BorrowDate?.ToString("dd/MM/yy") ?? "-")</span></div>
+                    <div class="d-flex justify-content-between"><span class="fw-bold text-danger">กำหนดคืน:</span> <span class="text-danger">@(item.DueDate?.ToString("dd/MM/yy") ?? "-")</span></div>
+                    @if (item.ReturnDate.HasValue)
+                    {
+                        <div class="d-flex justify-content-between"><span class="fw-bold text-success">วันที่คืน:</span> <span class="text-success">@item.ReturnDate.Value.ToString("dd/MM/yy")</span></div>
+                    }
+                </div>
                 @if (item.Status == BorrowStatus.Borrowed)
                 {
                     <Button Color="ButtonColor.Primary" Class="w-100" Outline="true" @onclick="() => OpenReturnModal(item)">
@@ -249,28 +250,17 @@
             </div>
         </div>
     }
-    
     @if (!GetFilteredItemsForMobile().Any())
     {
-        <div class="text-center text-muted py-4">
-            <Icon Name="IconName.Inbox" Class="fs-1 mb-2" />
-            <p>ไม่พบข้อมูล</p>
-        </div>
+        <div class="text-center text-muted py-4"><Icon Name="IconName.Inbox" Class="fs-1 mb-2" /><p>ไม่พบข้อมูล</p></div>
     }
 </div>
 
-@* --- Modal Return --- *@
 <Modal @ref="returnModal" Title="จัดการการคืนอุปกรณ์" IsVerticallyCentered="true">
     <BodyTemplate>
         <EditForm Model="editingBorrow" OnValidSubmit="SaveReturn">
-            <div class="mb-3">
-                <label class="form-label fw-bold">ผู้ยืม:</label>
-                <input type="text" class="form-control" value="@editingBorrow.BorrowerName" disabled />
-            </div>
-            <div class="mb-3">
-                <label class="form-label fw-bold">อุปกรณ์ที่คืน:</label>
-                <input type="text" class="form-control" value="@editingBorrow.Equipment" disabled />
-            </div>
+            <div class="mb-3"><label class="form-label fw-bold">ผู้ยืม:</label><input type="text" class="form-control" value="@editingBorrow.BorrowerName" disabled /></div>
+            <div class="mb-3"><label class="form-label fw-bold">อุปกรณ์ที่คืน:</label><input type="text" class="form-control" value="@editingBorrow.Equipment" disabled /></div>
             <div class="mb-3">
                 <label class="form-label fw-bold">สถานะ:</label>
                 <InputSelect @bind-Value="editingBorrow.Status" class="form-select">
@@ -282,10 +272,7 @@
             </div>
             @if (editingBorrow.Status == BorrowStatus.Return)
             {
-                <div class="mb-3">
-                    <label class="text-success fw-bold">วันที่คืนจริง:</label>
-                    <InputDate @bind-Value="editingBorrow.ReturnDate" class="form-control" />
-                </div>
+                <div class="mb-3"><label class="text-success fw-bold">วันที่คืนจริง:</label><InputDate @bind-Value="editingBorrow.ReturnDate" class="form-control" /></div>
             }
             <div class="text-end mt-4">
                 <Button Color="ButtonColor.Secondary" @onclick="CloseReturnModal">ยกเลิก</Button>
@@ -295,27 +282,48 @@
     </BodyTemplate>
 </Modal>
 
-@code {
-    // ... (Code เดิมของคุณในไฟล์ .razor.cs ใช้ต่อได้เลย) ...
+<Modal @ref="uploadModal" Title="บันทึกข้อมูลสำเร็จ" IsVerticallyCentered="true">
+    <BodyTemplate>
+        <div class="text-center mb-4">
+            <Icon Name="IconName.CheckCircle" Class="text-success display-4 mb-2" />
+            <h5>ต้องการแนบรูปภาพประกอบหลักฐานหรือไม่?</h5>
+            <small class="text-muted">คุณสามารถกด "ข้าม" หากไม่ต้องการแนบรูป</small>
+        </div>
+        <div class="card p-3 bg-light border-0">
+            <label class="form-label fw-bold">เลือกรูปภาพ:</label>
+            
+            @* เช็คจาก uploadedImagePath แทน previewImage *@
+            <div class="@(!string.IsNullOrEmpty(uploadedImagePath) ? "d-none" : "")">
+                @* เปลี่ยน OnChange เป็น HandleImageUpload แบบ ItemPage *@
+                <InputFile OnChange="HandleImageUpload" class="form-control" accept=".png,.jpg,.jpeg" />
+            </div>
 
-    // ✅ เพิ่มฟังก์ชันนี้ลงไปใน Block @code หรือไฟล์ .razor.cs เพื่อกรองข้อมูลให้ Mobile View
-    private IEnumerable<BorrowModels> GetFilteredItemsForMobile()
-    {
-        var result = borrowList.AsEnumerable();
+            @* แสดงรูปจาก Path ที่อัปโหลดเสร็จแล้ว *@
+            @if (!string.IsNullOrEmpty(uploadedImagePath))
+            {
+                <div class="text-center mt-2 position-relative">
+                    <img src="@uploadedImagePath" class="img-thumbnail" style="max-height: 200px;" />
+                    
+                    @* ปุ่มลบรูป (Optional: ถ้าอยากให้ลบได้) *@
+                    <Button Color="ButtonColor.Danger" Size="ButtonSize.Small" 
+                            Class="position-absolute top-0 end-0 m-1" 
+                            @onclick="ClearImage">
+                        <Icon Name="IconName.X" />
+                    </Button>
+                </div>
+            }
+        </div>
+    </BodyTemplate>
+    <FooterTemplate>
+        <Button Color="ButtonColor.Secondary" @onclick="FinishTransaction">
+            ข้าม (ไม่แนบรูป)
+        </Button>
 
-        if (filterStatus != 0)
-            result = result.Where(x => (int)x.Status == filterStatus);
-
-        if (!string.IsNullOrEmpty(searchText))
-        {
-            result = result.Where(x =>
-                (x.BorrowerName?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                (x.Equipment?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                (x.Barcode?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false)
-            );
-        }
-        
-        // เรียงลำดับล่าสุดขึ้นก่อน
-        return result.OrderByDescending(x => x.Id); 
-    }
-}
+        <Button Color="ButtonColor.Primary"
+                @onclick="SaveImageToDb"
+                Disabled="@string.IsNullOrEmpty(uploadedImagePath)">
+            <Icon Name="IconName.CheckCircleFill" Class="me-2" />
+            <span>ยืนยันและจบงาน</span>
+        </Button>
+    </FooterTemplate>
+</Modal>

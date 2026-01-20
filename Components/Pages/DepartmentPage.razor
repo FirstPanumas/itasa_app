@@ -3,21 +3,21 @@
 @using BlazorBootstrap
 @using itasa_app.Models
 @using Npgsql
+@using System.Data
 
 <h3>🏢 จัดการแผนก (Department)</h3>
 <div class="d-flex justify-content-between align-items-center mt-3 mb-3">
+    <div class="d-flex gap-2">
+        <Button Color="ButtonColor.Primary" @onclick="ShowAddModal">
+            <Icon Name="IconName.PlusCircle" /> เพิ่มแผนกใหม่
+        </Button>
+    </div>
+</div>
 
-<div class="d-flex gap-2">
-    
-    <Button Color="ButtonColor.Primary" @onclick="ShowAddModal">
-        <Icon Name="IconName.PlusCircle" /> เพิ่มแผนกใหม่
-    </Button>
-</div>
-</div>
 @* --- ตารางแสดงข้อมูล (Grid) --- *@
 <Grid @ref="grid"
       TItem="DepartmentModels"
-      Class="table table-hover table-bordered table-striped"
+      Class="table table-hover table-bordered table-striped align-middle"
       DataProvider="DepartmentsDataProvider"
       AllowFiltering="true"
       AllowPaging="true"
@@ -25,8 +25,6 @@
       Responsive="true">
 
     <GridColumns>
-       
-
         <GridColumn TItem="DepartmentModels" HeaderText="รหัสแผนก" PropertyName="DepartmentCode" SortString="DepartmentCode">
             @context.DepartmentCode
         </GridColumn>
@@ -34,12 +32,19 @@
         <GridColumn TItem="DepartmentModels" HeaderText="ชื่อแผนก" PropertyName="DepartmentName" SortString="DepartmentName">
             @context.DepartmentName
         </GridColumn>
-    </GridColumns>
 
+        @* ✅ 1. เพิ่ม Column ปุ่มแก้ไข *@
+        <GridColumn TItem="DepartmentModels" HeaderText="จัดการ" TextAlignment="Alignment.Center" Sortable="false">
+            <Button Color="ButtonColor.Warning" Size="ButtonSize.Small" @onclick="() => ShowEditModal(context)">
+                <Icon Name="IconName.PencilFill" class="text-white" /> แก้ไข
+            </Button>
+        </GridColumn>
+    </GridColumns>
 </Grid>
 
-@* --- Modal สำหรับเพิ่มข้อมูล --- *@
-<Modal @ref="addModal" Title="เพิ่มแผนกใหม่">
+@* --- Modal สำหรับเพิ่ม/แก้ไขข้อมูล --- *@
+@* ✅ ปรับ Title ให้เปลี่ยนตามสถานะ *@
+<Modal @ref="addModal" Title="@(newDept.Id == 0 ? "เพิ่มแผนกใหม่" : "แก้ไขข้อมูลแผนก")">
     <BodyTemplate>
         <EditForm Model="@newDept" OnValidSubmit="SaveDepartment">
             <DataAnnotationsValidator />
@@ -98,7 +103,21 @@
     // --- Modal Logic ---
     private async Task ShowAddModal()
     {
-        newDept = new DepartmentModels(); // ล้างค่า
+        newDept = new DepartmentModels(); // ล้างค่าเป็น Id=0
+        errorMessage = "";
+        await addModal.ShowAsync();
+    }
+
+    // ✅ 2. เพิ่มฟังก์ชัน ShowEditModal
+    private async Task ShowEditModal(DepartmentModels item)
+    {
+        // Clone ข้อมูลเพื่อไม่ให้กระทบ Grid ทันทีที่พิมพ์
+        newDept = new DepartmentModels
+        {
+            Id = item.Id,
+            DepartmentCode = item.DepartmentCode,
+            DepartmentName = item.DepartmentName
+        };
         errorMessage = "";
         await addModal.ShowAsync();
     }
@@ -116,9 +135,10 @@
             departments.Clear();
             using (NpgsqlConnection conn = new Myconnection().GetConnection())
             {
+                if (conn.State != ConnectionState.Open) conn.Open(); // Ensure Open
+
                 using (NpgsqlCommand cmd = conn.CreateCommand())
                 {
-                    // สมมติชื่อ Table ว่า "department_tb" (ปรับแก้ได้ตาม DB จริง)
                     cmd.CommandText = @"
                         SELECT ""Id"", ""DepartmentCode"", ""DepartmentName""
                         FROM public.department_tb
@@ -145,18 +165,26 @@
         }
     }
 
-    // --- Database Logic (Create) ---
+    // --- Database Logic (Create & Update) ---
     private async Task SaveDepartment()
     {
         try
         {
             using (NpgsqlConnection conn = new Myconnection().GetConnection())
             {
-                // 1. เช็ค Code ซ้ำ
+                if (conn.State != ConnectionState.Open) conn.Open();
+
+                // ✅ 3. เช็ค Code ซ้ำ (ต้องไม่นับตัวเอง กรณีแก้ไข)
                 using (NpgsqlCommand checkCmd = conn.CreateCommand())
                 {
-                    checkCmd.CommandText = @"SELECT COUNT(*) FROM public.department_tb WHERE ""DepartmentCode"" = @code";
+                    // เช็คว่ามี Code นี้หรือไม่ โดย ID ต้องไม่เท่ากับตัวปัจจุบัน
+                    checkCmd.CommandText = @"SELECT COUNT(*) FROM public.department_tb
+                                             WHERE ""DepartmentCode"" = @code
+                                             AND ""Id"" != @id";
+
                     checkCmd.Parameters.AddWithValue("code", newDept.DepartmentCode);
+                    checkCmd.Parameters.AddWithValue("id", newDept.Id); // ถ้าเพิ่มใหม่ Id จะเป็น 0
+
                     long count = Convert.ToInt64(checkCmd.ExecuteScalar());
 
                     if (count > 0)
@@ -166,12 +194,27 @@
                     }
                 }
 
-                // 2. Insert ข้อมูล
+                // ✅ 4. แยก Logic Insert / Update
                 using (NpgsqlCommand cmd = conn.CreateCommand())
                 {
-                    cmd.CommandText = @"
-                        INSERT INTO public.department_tb (""DepartmentCode"", ""DepartmentName"")
-                        VALUES (@code, @name)";
+                    if (newDept.Id == 0)
+                    {
+                        // --- Insert ---
+                        cmd.CommandText = @"
+                            INSERT INTO public.department_tb (""DepartmentCode"", ""DepartmentName"")
+                            VALUES (@code, @name)";
+                    }
+                    else
+                    {
+                        // --- Update ---
+                        cmd.CommandText = @"
+                            UPDATE public.department_tb
+                            SET ""DepartmentCode"" = @code,
+                                ""DepartmentName"" = @name
+                            WHERE ""Id"" = @id";
+
+                        cmd.Parameters.AddWithValue("id", newDept.Id);
+                    }
 
                     cmd.Parameters.AddWithValue("code", newDept.DepartmentCode);
                     cmd.Parameters.AddWithValue("name", newDept.DepartmentName);
@@ -182,8 +225,8 @@
 
             // Success
             await HideAddModal();
-            FetchData();
-            await grid.RefreshDataAsync();
+            FetchData(); // โหลดข้อมูลใหม่
+            await grid.RefreshDataAsync(); // รีเฟรชตาราง
         }
         catch (Exception ex)
         {

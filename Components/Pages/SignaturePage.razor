@@ -1,0 +1,75 @@
+﻿@page "/signature"
+@inject IJSRuntime JSRuntime
+@using BlazorBootstrap
+
+<div class="container mt-4">
+    <div class="text-center mb-3">
+        <h3>✍️ เซ็นชื่อรับรอง (Digital Signature)</h3>
+        <p class="text-muted">กรุณาเซ็นชื่อในกรอบสี่เหลี่ยมด้านล่าง</p>
+    </div>
+
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card shadow-sm border-secondary">
+                <div class="card-body p-0 d-flex justify-content-center bg-white">
+
+                    @* Canvas: กำหนด style ให้กว้างเต็มพื้นที่แต่มีความสูงคงที่ *@
+                    <canvas id="signatureCanvas"
+                            style="width: 100%; height: 250px; cursor: crosshair; touch-action: none;">
+                    </canvas>
+
+                </div>
+                <div class="card-footer bg-light d-flex justify-content-between">
+                    <Button Color="ButtonColor.Secondary" @onclick="ClearSignature">
+                        <Icon Name="IconName.Eraser" /> ล้างลายเซ็น
+                    </Button>
+                    <Button Color="ButtonColor.Primary" @onclick="SaveSignature">
+                        <Icon Name="IconName.Floppy" /> บันทึก
+                    </Button>
+                </div>
+            </div>
+
+            @* ส่วนแสดงผลเมื่อบันทึกเสร็จ *@
+            @if (!string.IsNullOrEmpty(savedSignature))
+            {
+                <div class="alert alert-success mt-4 text-center">
+                    <h5>✅ บันทึกสำเร็จ!</h5>
+                    <p>ลายเซ็นของคุณถูกแปลงเป็นรูปภาพแล้ว:</p>
+                    <img src="@savedSignature" class="border bg-white p-2" style="max-height: 150px;" />
+
+                    <div class="mt-2 text-muted small">
+                        * คุณสามารถนำ String Base64 นี้ไปบันทึกลง Database ได้เลย
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private string savedSignature = "";
+
+    // เริ่มการทำงาน JS เมื่อหน้าเว็บโหลดเสร็จ
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JSRuntime.InvokeVoidAsync("setupSignaturePad", "signatureCanvas");
+        }
+    }
+
+    private async Task ClearSignature()
+    {
+        await JSRuntime.InvokeVoidAsync("clearSignaturePad", "signatureCanvas");
+        savedSignature = "";
+    }
+
+    private async Task SaveSignature()
+    {
+        // 1. ดึงข้อมูลรูปภาพจาก Canvas (Base64 String)
+        savedSignature = await JSRuntime.InvokeAsync<string>("getSignatureImage", "signatureCanvas");
+
+        // 2. (Optional) โค้ดบันทึกลง Database ของคุณจะอยู่ตรงนี้
+        // เช่น: await MyDbService.SaveSignatureToBorrow(borrowId, savedSignature);
+    }
+}
